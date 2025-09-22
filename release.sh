@@ -13,99 +13,179 @@ confirm() {
 }
 
 # Compare semantic versions
-# Returns: 0 if v1 > v2, 1 if v1 <= v2
-version_gt() {
+# Returns: 0 if v1 > v2, 1 if v1 <= v2, 2 if equal
+version_compare() {
   local v1="$1"
   local v2="$2"
   
-  # Split versions into arrays
   IFS='.' read -ra V1_PARTS <<< "$v1"
   IFS='.' read -ra V2_PARTS <<< "$v2"
   
-  # Compare major
-  if [ "${V1_PARTS[0]}" -gt "${V2_PARTS[0]}" ]; then
-    return 0
-  elif [ "${V1_PARTS[0]}" -lt "${V2_PARTS[0]}" ]; then
-    return 1
-  fi
+  # Compare major.minor.patch
+  for i in 0 1 2; do
+    if [ "${V1_PARTS[$i]}" -gt "${V2_PARTS[$i]}" ]; then
+      return 0  # v1 > v2
+    elif [ "${V1_PARTS[$i]}" -lt "${V2_PARTS[$i]}" ]; then
+      return 1  # v1 < v2
+    fi
+  done
   
-  # Compare minor
-  if [ "${V1_PARTS[1]}" -gt "${V2_PARTS[1]}" ]; then
-    return 0
-  elif [ "${V1_PARTS[1]}" -lt "${V2_PARTS[1]}" ]; then
-    return 1
-  fi
-  
-  # Compare patch
-  if [ "${V1_PARTS[2]}" -gt "${V2_PARTS[2]}" ]; then
-    return 0
-  else
-    return 1
-  fi
+  return 2  # v1 == v2
+}
+
+# Get next version suggestions
+suggest_next_versions() {
+  local current="$1"
+  IFS='.' read -ra PARTS <<< "$current"
+  echo "   📌 Suggested next versions:"
+  echo "      Patch: ${PARTS[0]}.${PARTS[1]}.$((PARTS[2] + 1))"
+  echo "      Minor: ${PARTS[0]}.$((PARTS[1] + 1)).0"
+  echo "      Major: $((PARTS[0] + 1)).0.0"
 }
 
 # -----------------------------
-# Validate input
+# Parse arguments
 # -----------------------------
-if [ $# -ne 1 ]; then
-  echo "Usage: ./release.sh <version>"
-  echo "Example: ./release.sh 0.1.3"
+FORCE_RELEASE=false
+VERSION=""
+VERSION_SOURCE=""  # Track where version came from
+
+if [ $# -eq 0 ]; then
+  # No arguments - auto-detect from VERSION file
+  if [ -f VERSION ]; then
+    VERSION=$(cat VERSION | tr -d '[:space:]')
+    VERSION_SOURCE="file"
+    echo "📊 Using version from VERSION file: $VERSION"
+  else
+    echo "❌ No VERSION file found!"
+    echo ""
+    echo "   Create a VERSION file first:"
+    echo "   echo '0.1.0' > VERSION"
+    echo ""
+    echo "   Or specify version explicitly:"
+    echo "   ./release.sh 0.1.0"
+    exit 1
+  fi
+elif [ $# -eq 1 ]; then
+  if [ "$1" = "--force" ]; then
+    # Just --force, auto-detect version
+    FORCE_RELEASE=true
+    if [ -f VERSION ]; then
+      VERSION=$(cat VERSION | tr -d '[:space:]')
+      VERSION_SOURCE="file"
+      echo "📊 Using version from VERSION file: $VERSION (--force)"
+    else
+      echo "❌ No VERSION file found for --force!"
+      exit 1
+    fi
+  else
+    # Version explicitly specified
+    VERSION="$1"
+    VERSION_SOURCE="argument"
+  fi
+elif [ $# -eq 2 ] && [ "$2" = "--force" ]; then
+  # Version and --force
+  VERSION="$1"
+  VERSION_SOURCE="argument"
+  FORCE_RELEASE=true
+else
+  echo "Usage: ./release.sh [version] [--force]"
+  echo ""
+  echo "Examples:"
+  echo "  ./release.sh              # Use VERSION file content"
+  echo "  ./release.sh 0.1.4        # Release specified version"
+  echo "  ./release.sh 0.1.3 --force # Force specific version"
+  echo "  ./release.sh --force      # Force VERSION file version"
   exit 1
 fi
-
-VERSION="$1"
-VERSION_BRANCH="$VERSION"      # Branch name: 0.1.3
-VERSION_TAG="v$VERSION"        # Tag name: v0.1.3
 
 # Validate version format
 if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "❌ Invalid version format: $VERSION"
-  echo "Format must be: MAJOR.MINOR.PATCH (e.g., 0.1.3)"
+  echo "   Format must be: MAJOR.MINOR.PATCH (e.g., 0.1.3)"
   exit 1
 fi
 
+VERSION_BRANCH="$VERSION"      # Branch name: 0.1.3
+VERSION_TAG="v$VERSION"        # Tag name: v0.1.3
+
 # -----------------------------
-# Check current VERSION and validate it's newer
+# Check VERSION file and decide if update needed
 # -----------------------------
+UPDATE_VERSION_FILE=false
+CURRENT_VERSION="0.0.0"
+
 if [ -f VERSION ]; then
   CURRENT_VERSION=$(cat VERSION | tr -d '[:space:]')
-  echo "📊 Current version: $CURRENT_VERSION"
-  echo "📊 New version: $VERSION"
   
-  if [ "$CURRENT_VERSION" = "$VERSION" ]; then
-    echo "❌ Version $VERSION is already the current version!"
-    echo "   No release needed."
-    exit 1
-  fi
-  
-  if ! version_gt "$VERSION" "$CURRENT_VERSION"; then
-    echo "❌ New version $VERSION must be greater than current version $CURRENT_VERSION!"
-    echo ""
-    echo "   Current: $CURRENT_VERSION"
-    echo "   Attempted: $VERSION"
-    echo ""
-    echo "   Valid next versions could be:"
+  if [ "$VERSION_SOURCE" = "argument" ]; then
+    # Version was specified as argument, need to compare
+    version_compare "$VERSION" "$CURRENT_VERSION"
+    COMPARE_RESULT=$?
     
-    # Suggest next versions
-    IFS='.' read -ra PARTS <<< "$CURRENT_VERSION"
-    echo "   - Patch: ${PARTS[0]}.${PARTS[1]}.$((PARTS[2] + 1))"
-    echo "   - Minor: ${PARTS[0]}.$((PARTS[1] + 1)).0"
-    echo "   - Major: $((PARTS[0] + 1)).0.0"
+    if [ $COMPARE_RESULT -eq 2 ]; then
+      # Same version
+      echo "✅ Version matches VERSION file: $VERSION"
+      echo "   Proceeding with release (no file updates needed)"
+    elif [ $COMPARE_RESULT -eq 0 ]; then
+      # New version is greater
+      echo "📈 Version upgrade: $CURRENT_VERSION → $VERSION"
+      UPDATE_VERSION_FILE=true
+    else
+      # New version is lower
+      if [ "$FORCE_RELEASE" = true ]; then
+        echo "⚠️  Version downgrade: $CURRENT_VERSION → $VERSION (--force)"
+        UPDATE_VERSION_FILE=true
+      else
+        echo "❌ Version $VERSION is older than current $CURRENT_VERSION!"
+        echo ""
+        suggest_next_versions "$CURRENT_VERSION"
+        echo ""
+        echo "   To force: ./release.sh $VERSION --force"
+        echo "   To release current: ./release.sh"
+        exit 1
+      fi
+    fi
+  else
+    # Using VERSION file content, no update needed
+    echo "✅ Releasing version from VERSION file: $VERSION"
+  fi
+else
+  # No VERSION file exists
+  if [ "$VERSION_SOURCE" = "argument" ]; then
+    echo "ℹ️  Creating VERSION file with: $VERSION"
+    UPDATE_VERSION_FILE=true
+  else
+    # This shouldn't happen (caught earlier)
+    echo "❌ No VERSION file found!"
     exit 1
   fi
-  
-  echo "✅ Version bump validated: $CURRENT_VERSION → $VERSION"
-else
-  echo "ℹ️  No VERSION file found, will create with version $VERSION"
-  CURRENT_VERSION="0.0.0"
 fi
 
 echo ""
 echo "🎯 Release Plan:"
 echo "   Version: $VERSION"
-echo "   Branch:  $VERSION_BRANCH (for cargo generate)"
-echo "   Tag:     $VERSION_TAG (for GitHub releases)"
+echo "   Branch:  $VERSION_BRANCH"
+echo "   Tag:     $VERSION_TAG"
+if [ "$UPDATE_VERSION_FILE" = true ]; then
+  echo "   Update VERSION: $CURRENT_VERSION → $VERSION"
+fi
+if [ "$FORCE_RELEASE" = true ]; then
+  echo "   Mode: FORCE"
+fi
 echo ""
+
+# -----------------------------
+# Get current branch
+# -----------------------------
+CURRENT_BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo "")
+
+if [ -z "$CURRENT_BRANCH" ]; then
+  echo "❌ Not on any branch (detached HEAD)"
+  exit 1
+fi
+
+echo "📍 Current branch: $CURRENT_BRANCH"
 
 # -----------------------------
 # SAFETY CHECK: Uncommitted changes
@@ -129,123 +209,132 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
 fi
 
 # -----------------------------
-# Get current branch
-# -----------------------------
-CURRENT_BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo "")
-
-if [ -z "$CURRENT_BRANCH" ]; then
-  echo "❌ Not on any branch (detached HEAD)"
-  exit 1
-fi
-
-echo "📍 Current branch: $CURRENT_BRANCH"
-
-# -----------------------------
 # Fetch latest changes
 # -----------------------------
 echo "📥 Fetching latest changes..."
 git fetch origin --tags --prune
 
 # -----------------------------
-# Handle branch scenarios
+# Switch to or create version branch
 # -----------------------------
 if [ "$CURRENT_BRANCH" = "$VERSION_BRANCH" ]; then
   echo "✅ Already on version branch '$VERSION_BRANCH'"
   
-  # Check if this is a different version branch than expected
-  if [ -f VERSION ]; then
-    BRANCH_VERSION=$(cat VERSION | tr -d '[:space:]')
-    if [ "$BRANCH_VERSION" != "$VERSION" ] && [ "$BRANCH_VERSION" != "0.0.0" ]; then
-      echo "⚠️  Branch $VERSION_BRANCH has VERSION file with $BRANCH_VERSION"
-      if ! confirm "Continue and update to $VERSION?"; then
-        echo "❌ Release aborted"
-        exit 1
+  # Sync with remote if exists
+  if git show-ref --verify --quiet "refs/remotes/origin/$VERSION_BRANCH"; then
+    LOCAL=$(git rev-parse HEAD)
+    REMOTE=$(git rev-parse "origin/$VERSION_BRANCH")
+    
+    if [ "$LOCAL" != "$REMOTE" ]; then
+      echo "⚠️  Branch has diverged from remote"
+      if confirm "Pull remote changes?"; then
+        git pull origin "$VERSION_BRANCH" --rebase=false
       fi
     fi
   fi
-  
-elif [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
-  echo "📍 On $CURRENT_BRANCH branch"
-  
-  if git show-ref --verify --quiet "refs/heads/$VERSION_BRANCH"; then
-    echo "ℹ️  Version branch '$VERSION_BRANCH' already exists"
-    git checkout "$VERSION_BRANCH"
-  else
-    echo "🌿 Creating new version branch '$VERSION_BRANCH'..."
-    git checkout -b "$VERSION_BRANCH"
-  fi
-
 else
-  echo "⚠️  You're on '$CURRENT_BRANCH'"
-  
+  # Need to switch to version branch
   if git show-ref --verify --quiet "refs/heads/$VERSION_BRANCH"; then
-    if confirm "Switch to existing branch '$VERSION_BRANCH'?"; then
-      git checkout "$VERSION_BRANCH"
-    else
-      echo "❌ Release aborted"
-      exit 1
+    echo "📋 Switching to existing branch '$VERSION_BRANCH'"
+    git checkout "$VERSION_BRANCH"
+    
+    # Pull latest if remote exists
+    if git show-ref --verify --quiet "refs/remotes/origin/$VERSION_BRANCH"; then
+      echo "📥 Pulling latest changes..."
+      git pull origin "$VERSION_BRANCH" --rebase=false
     fi
   else
-    if confirm "Create new version branch '$VERSION_BRANCH' from current branch?"; then
+    # Create new version branch
+    echo "🌿 Creating new version branch '$VERSION_BRANCH'"
+    
+    if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
       git checkout -b "$VERSION_BRANCH"
     else
-      echo "❌ Release aborted"
-      exit 1
+      echo "⚠️  You're on '$CURRENT_BRANCH' (not main/master)"
+      if confirm "Create branch from current location?"; then
+        git checkout -b "$VERSION_BRANCH"
+      else
+        # Switch to main first
+        git checkout main 2>/dev/null || git checkout master
+        git pull origin "$(git symbolic-ref --short HEAD)"
+        git checkout -b "$VERSION_BRANCH"
+      fi
     fi
   fi
 fi
 
 # -----------------------------
-# Update VERSION file
+# Update VERSION file (only if needed)
 # -----------------------------
-echo "📝 Updating VERSION file: $CURRENT_VERSION → $VERSION"
-echo "$VERSION" > VERSION
-git add VERSION
+if [ "$UPDATE_VERSION_FILE" = true ]; then
+  echo "📝 Updating VERSION file: $CURRENT_VERSION → $VERSION"
+  echo "$VERSION" > VERSION
+  git add VERSION
+fi
 
 # -----------------------------
 # Update cargo-generate.toml branch field
 # -----------------------------
 if [ -f "cargo-generate.toml" ]; then
-  echo "📝 Updating cargo-generate.toml branch field to '$VERSION_BRANCH'"
+  NEEDS_UPDATE=false
   
-  # Check if branch field exists
+  # Check if branch field needs updating
   if grep -q "^branch = " cargo-generate.toml; then
-    # Update existing branch field
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-      # macOS
-      sed -i '' "s/^branch = .*/branch = \"$VERSION_BRANCH\"/" cargo-generate.toml
-    else
-      # Linux
-      sed -i "s/^branch = .*/branch = \"$VERSION_BRANCH\"/" cargo-generate.toml
+    CURRENT_BRANCH_VALUE=$(grep "^branch = " cargo-generate.toml | sed 's/branch = "\(.*\)"/\1/')
+    if [ "$CURRENT_BRANCH_VALUE" != "$VERSION_BRANCH" ]; then
+      NEEDS_UPDATE=true
+      echo "📝 Updating cargo-generate.toml: branch = \"$CURRENT_BRANCH_VALUE\" → \"$VERSION_BRANCH\""
     fi
   else
-    # Add branch field after cargo_generate_version if it doesn't exist
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-      sed -i '' "/^cargo_generate_version = /a\\
-branch = \"$VERSION_BRANCH\"" cargo-generate.toml
-    else
-      sed -i "/^cargo_generate_version = /a\\branch = \"$VERSION_BRANCH\"" cargo-generate.toml
-    fi
+    NEEDS_UPDATE=true
+    echo "📝 Adding branch field to cargo-generate.toml: branch = \"$VERSION_BRANCH\""
   fi
   
-  git add cargo-generate.toml
-  
-  # Show the changes
-  echo "📋 Updated cargo-generate.toml:"
-  grep -A1 "^\[template\]" cargo-generate.toml | head -3
+  if [ "$NEEDS_UPDATE" = true ]; then
+    if grep -q "^branch = " cargo-generate.toml; then
+      # Update existing branch field
+      if [[ "$OSTYPE" == "darwin"* ]]; then
+        sed -i '' "s/^branch = .*/branch = \"$VERSION_BRANCH\"/" cargo-generate.toml
+      else
+        sed -i "s/^branch = .*/branch = \"$VERSION_BRANCH\"/" cargo-generate.toml
+      fi
+    else
+      # Add branch field after cargo_generate_version
+      if [[ "$OSTYPE" == "darwin"* ]]; then
+        sed -i '' "/^cargo_generate_version = /a\\
+branch = \"$VERSION_BRANCH\"" cargo-generate.toml
+      else
+        sed -i "/^cargo_generate_version = /a\\branch = \"$VERSION_BRANCH\"" cargo-generate.toml
+      fi
+    fi
+    
+    git add cargo-generate.toml
+  else
+    echo "✅ cargo-generate.toml already has correct branch"
+  fi
 fi
 
 # -----------------------------
-# Commit version changes
+# Commit if needed
 # -----------------------------
 if ! git diff --cached --quiet; then
-  echo "💾 Committing version changes..."
-  git commit -m "chore(release): bump version to $VERSION
+  COMMIT_MSG="chore(release): prepare release $VERSION"
+  
+  if [ "$UPDATE_VERSION_FILE" = true ] && [ "$NEEDS_UPDATE" = true ]; then
+    COMMIT_MSG="chore(release): bump version to $VERSION
 
 - Updated VERSION file to $VERSION
 - Updated cargo-generate.toml branch to $VERSION_BRANCH"
+  elif [ "$UPDATE_VERSION_FILE" = true ]; then
+    COMMIT_MSG="chore(release): bump version to $VERSION"
+  elif [ "$NEEDS_UPDATE" = true ]; then
+    COMMIT_MSG="chore(release): update cargo-generate.toml branch to $VERSION_BRANCH"
+  fi
+  
+  echo "💾 Committing changes..."
+  git commit -m "$COMMIT_MSG"
 else
-  echo "ℹ️  No changes to commit"
+  echo "✅ No file changes needed"
 fi
 
 # -----------------------------
@@ -267,8 +356,12 @@ if git rev-parse "$VERSION_TAG" >/dev/null 2>&1; then
 fi
 
 if git ls-remote --tags origin | grep -q "refs/tags/$VERSION_TAG"; then
-  if confirm "Delete existing remote tag '$VERSION_TAG'?"; then
+  if [ "$FORCE_RELEASE" = true ] || confirm "Delete and recreate remote tag '$VERSION_TAG'?"; then
+    echo "🗑  Deleting remote tag: $VERSION_TAG"
     git push origin ":refs/tags/$VERSION_TAG"
+  else
+    echo "❌ Tag already exists"
+    exit 1
   fi
 fi
 
@@ -284,17 +377,18 @@ git push origin "$VERSION_TAG"
 # Success
 # -----------------------------
 echo ""
-echo "✅ Release $VERSION completed successfully!"
+echo "✅ Release $VERSION completed!"
 echo ""
-echo "📋 Summary:"
-echo "   • VERSION file: $CURRENT_VERSION → $VERSION"
-echo "   • Branch: $VERSION_BRANCH"
-echo "   • Tag: $VERSION_TAG"
-echo "   • cargo-generate.toml: branch = \"$VERSION_BRANCH\""
-echo ""
-echo "📦 Users can install with:"
+echo "📦 Install command:"
 echo "   cargo generate --git $(git config --get remote.origin.url) --branch $VERSION_BRANCH --name myapp"
 echo ""
 echo "📌 Next steps:"
-echo "   1. Create GitHub release from tag '$VERSION_TAG'"
-echo "   2. Test: cargo generate --git $(git config --get remote.origin.url) --branch $VERSION_BRANCH --name test"
+if [ "$UPDATE_VERSION_FILE" = false ]; then
+  echo "   1. Create/update GitHub release for tag '$VERSION_TAG'"
+  echo "   2. For next release, update VERSION file then run ./release.sh"
+else
+  echo "   1. Create GitHub release from tag '$VERSION_TAG'"
+  echo "   2. For next release:"
+  suggest_next_versions "$VERSION"
+  echo "      Then run: ./release.sh"
+fi
