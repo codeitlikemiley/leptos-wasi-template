@@ -142,39 +142,27 @@ echo "⬆️  Pushing branch '$VERSION_BRANCH'..."
 git push origin "$VERSION_BRANCH" 2>/dev/null || git push --set-upstream origin "$VERSION_BRANCH"
 
 # -----------------------------
-# Handle tag
+# Handle tag - AUTO RECREATE
 # -----------------------------
 echo ""
 echo "🏷️  Handling tag '$VERSION_TAG'..."
 
-# Check if tag exists
-TAG_EXISTS=false
+# Delete existing tags (local and remote) without asking
 if git tag -l | grep -q "^$VERSION_TAG$"; then
-  TAG_EXISTS=true
-  echo "   Local tag exists"
+  echo "   Removing existing local tag..."
+  git tag -d "$VERSION_TAG" >/dev/null 2>&1
 fi
 
 if git ls-remote --tags origin | grep -q "refs/tags/$VERSION_TAG"; then
-  TAG_EXISTS=true
-  echo "   Remote tag exists"
+  echo "   Removing existing remote tag..."
+  git push origin ":refs/tags/$VERSION_TAG" >/dev/null 2>&1
 fi
 
-if [ "$TAG_EXISTS" = true ]; then
-  if confirm "Tag '$VERSION_TAG' exists. Recreate it?"; then
-    echo "🗑  Deleting old tag..."
-    git tag -d "$VERSION_TAG" 2>/dev/null || true
-    git push origin ":refs/tags/$VERSION_TAG" 2>/dev/null || true
-  else
-    echo "✅ Keeping existing tag"
-    echo ""
-    echo "📦 Install command:"
-    echo "   cargo generate --git $(git config --get remote.origin.url) --branch $VERSION_BRANCH --name myapp"
-    exit 0
-  fi
-fi
-
+# Create and push new tag
 echo "✨ Creating tag '$VERSION_TAG'..."
-git tag -a "$VERSION_TAG" -m "Release $VERSION"
+git tag -a "$VERSION_TAG" -m "Release $VERSION
+
+cargo generate --git $(git config --get remote.origin.url) --branch $VERSION_BRANCH --name myapp"
 
 echo "⬆️  Pushing tag..."
 git push origin "$VERSION_TAG"
