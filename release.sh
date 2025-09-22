@@ -60,55 +60,126 @@ echo "📥 Fetching latest changes..."
 git fetch origin --tags --prune
 
 # -----------------------------
-# Handle the version branch
+# Handle different branch scenarios
 # -----------------------------
 if [ "$CURRENT_BRANCH" = "$VERSION_BRANCH" ]; then
+  # SCENARIO 1: Already on the correct version branch
   echo "✅ Already on version branch '$VERSION_BRANCH'"
   
-  # Sync with remote if it exists
+  # Check if branch exists on remote
   if git show-ref --verify --quiet "refs/remotes/origin/$VERSION_BRANCH"; then
-    echo "📦 Pulling latest changes from origin/$VERSION_BRANCH..."
-    git pull origin "$VERSION_BRANCH"
-  fi
-  
-elif git show-ref --verify --quiet "refs/heads/$VERSION_BRANCH"; then
-  echo "ℹ️  Version branch '$VERSION_BRANCH' exists locally"
-  if confirm "Switch to existing branch '$VERSION_BRANCH'?"; then
-    git checkout "$VERSION_BRANCH"
+    echo "📦 Branch exists on remote, checking for updates..."
     
-    # Sync with remote if it exists
-    if git show-ref --verify --quiet "refs/remotes/origin/$VERSION_BRANCH"; then
-      echo "📦 Pulling latest changes from origin/$VERSION_BRANCH..."
-      git pull origin "$VERSION_BRANCH"
+    # Check if we're behind/ahead
+    LOCAL_COMMIT=$(git rev-parse HEAD)
+    REMOTE_COMMIT=$(git rev-parse "origin/$VERSION_BRANCH")
+    
+    if [ "$LOCAL_COMMIT" != "$REMOTE_COMMIT" ]; then
+      BEHIND=$(git rev-list --count HEAD..origin/"$VERSION_BRANCH")
+      AHEAD=$(git rev-list --count origin/"$VERSION_BRANCH"..HEAD)
+      
+      if [ "$BEHIND" -gt 0 ] && [ "$AHEAD" -gt 0 ]; then
+        echo "⚠️  Branch has diverged: $AHEAD commits ahead, $BEHIND commits behind"
+        if confirm "Pull and merge remote changes?"; then
+          git pull origin "$VERSION_BRANCH" --no-rebase
+        fi
+      elif [ "$BEHIND" -gt 0 ]; then
+        echo "⬇️  Branch is $BEHIND commits behind"
+        if confirm "Pull remote changes?"; then
+          git pull origin "$VERSION_BRANCH"
+        fi
+      elif [ "$AHEAD" -gt 0 ]; then
+        echo "⬆️  Branch is $AHEAD commits ahead of remote"
+      fi
+    else
+      echo "✅ Branch is up to date with remote"
     fi
   else
+    echo "ℹ️  Branch doesn't exist on remote yet (will push later)"
+  fi
+  
+  # Ask if they want to continue with the release from here
+  if ! confirm "Continue with release from current branch '$VERSION_BRANCH'?"; then
     echo "❌ Release aborted"
     exit 1
   fi
+
+elif [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
+  # SCENARIO 2: On main/master, need to create or switch to version branch
+  echo "📍 On $CURRENT_BRANCH branch"
   
-else
-  # Create new version branch
-  echo "🌿 Version branch '$VERSION_BRANCH' doesn't exist"
+  # Pull latest main
+  echo "📦 Updating $CURRENT_BRANCH..."
+  git pull origin "$CURRENT_BRANCH"
   
-  # Determine base branch
-  if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
-    BASE_BRANCH="$CURRENT_BRANCH"
-  else
-    echo "⚠️  You're not on main/master branch"
-    if confirm "Create version branch from current branch '$CURRENT_BRANCH'?"; then
-      BASE_BRANCH="$CURRENT_BRANCH"
-    elif confirm "Switch to main branch first?"; then
-      git checkout main 2>/dev/null || git checkout master
-      BASE_BRANCH=$(git symbolic-ref --short HEAD)
+  # Check if version branch exists
+  if git show-ref --verify --quiet "refs/heads/$VERSION_BRANCH"; then
+    echo "ℹ️  Version branch '$VERSION_BRANCH' exists locally"
+    if confirm "Switch to branch '$VERSION_BRANCH'?"; then
+      git checkout "$VERSION_BRANCH"
+      
+      # Merge main into version branch
+      if confirm "Update version branch with latest from $CURRENT_BRANCH?"; then
+        git merge "$CURRENT_BRANCH" --no-edit
+      fi
     else
       echo "❌ Release aborted"
       exit 1
     fi
+  else
+    echo "🌿 Creating new version branch '$VERSION_BRANCH'..."
+    git checkout -b "$VERSION_BRANCH"
   fi
+
+else
+  # SCENARIO 3: On some other branch
+  echo "⚠️  You're on branch '$CURRENT_BRANCH' (not main/master or version branch)"
   
-  echo "🌿 Creating version branch '$VERSION_BRANCH' from '$BASE_BRANCH'..."
-  git checkout -b "$VERSION_BRANCH"
+  # Check if version branch exists
+  if git show-ref --verify --quiet "refs/heads/$VERSION_BRANCH"; then
+    echo "ℹ️  Version branch '$VERSION_BRANCH' already exists"
+    if confirm "Switch to branch '$VERSION_BRANCH'?"; then
+      git checkout "$VERSION_BRANCH"
+    else
+      echo "❌ Release aborted"
+      exit 1
+    fi
+  else
+    echo "🌿 Version branch '$VERSION_BRANCH' doesn't exist"
+    
+    # Ask what to do
+    echo ""
+    echo "Options:"
+    echo "  1) Create version branch from current branch '$CURRENT_BRANCH'"
+    echo "  2) Switch to main/master first"
+    echo "  3) Abort"
+    
+    read -r -p "Choose option (1/2/3): " option
+    case "$option" in
+      1)
+        echo "🌿 Creating version branch from '$CURRENT_BRANCH'..."
+        git checkout -b "$VERSION_BRANCH"
+        ;;
+      2)
+        git checkout main 2>/dev/null || git checkout master
+        git pull origin "$(git symbolic-ref --short HEAD)"
+        echo "🌿 Creating version branch from main/master..."
+        git checkout -b "$VERSION_BRANCH"
+        ;;
+      *)
+        echo "❌ Release aborted"
+        exit 1
+        ;;
+    esac
+  fi
 fi
+
+# -----------------------------
+# Now we're definitely on the version branch
+# -----------------------------
+CURRENT_BRANCH=$(git symbolic-ref --short HEAD)
+echo ""
+echo "🎯 Working on branch: $CURRENT_BRANCH"
 
 # -----------------------------
 # Update VERSION file
@@ -167,6 +238,12 @@ fi
 if ! git diff --cached --quiet; then
   echo "💾 Committing version changes..."
   git commit -m "chore(release): prepare version $VERSION"
+elif ! git diff --quiet; then
+  echo "⚠️  You have uncommitted changes"
+  if confirm "Stage and commit all changes?"; then
+    git add -A
+    git commit -m "chore(release): prepare version $VERSION"
+  fi
 else
   echo "ℹ️  No changes to commit"
 fi
@@ -174,16 +251,22 @@ fi
 # -----------------------------
 # Push the version branch
 # -----------------------------
+echo ""
 echo "⬆️  Pushing branch '$VERSION_BRANCH'..."
 if git show-ref --verify --quiet "refs/remotes/origin/$VERSION_BRANCH"; then
+  # Branch exists on remote, regular push
   git push origin "$VERSION_BRANCH"
 else
+  # New branch, set upstream
   git push --set-upstream origin "$VERSION_BRANCH"
 fi
 
 # -----------------------------
 # Handle the tag
 # -----------------------------
+echo ""
+echo "🏷️  Handling tag '$VERSION_TAG'..."
+
 # Delete existing local tag if present
 if git rev-parse "$VERSION_TAG" >/dev/null 2>&1; then
   echo "🗑  Deleting existing local tag: $VERSION_TAG"
@@ -197,22 +280,24 @@ if git ls-remote --tags origin | grep -q "refs/tags/$VERSION_TAG"; then
     echo "🗑  Deleting remote tag: $VERSION_TAG"
     git push origin ":refs/tags/$VERSION_TAG"
   else
-    echo "❌ Cannot proceed with existing tag"
-    exit 1
+    echo "⚠️  Keeping existing tag"
+    echo "ℹ️  Skipping tag creation"
   fi
 fi
 
-# Create new tag
-echo "✨ Creating tag: $VERSION_TAG"
-git tag -a "$VERSION_TAG" -m "Release $VERSION
+# Create new tag (only if we deleted or it didn't exist)
+if ! git rev-parse "$VERSION_TAG" >/dev/null 2>&1; then
+  echo "✨ Creating tag: $VERSION_TAG"
+  git tag -a "$VERSION_TAG" -m "Release $VERSION
 
 Template installation:
 - Via branch: cargo generate --git $(git config --get remote.origin.url) --branch $VERSION_BRANCH
 - Via tag: cargo generate --git $(git config --get remote.origin.url) --tag $VERSION_TAG"
 
-# Push tag
-echo "⬆️  Pushing tag '$VERSION_TAG'..."
-git push origin "$VERSION_TAG"
+  # Push tag
+  echo "⬆️  Pushing tag '$VERSION_TAG'..."
+  git push origin "$VERSION_TAG"
+fi
 
 # -----------------------------
 # Success!
@@ -221,8 +306,8 @@ echo ""
 echo "✅ Release $VERSION completed successfully!"
 echo ""
 echo "📋 Summary:"
-echo "   • Branch '$VERSION_BRANCH' created and pushed (for cargo-generate)"
-echo "   • Tag '$VERSION_TAG' created and pushed (for GitHub releases)"
+echo "   • Branch '$VERSION_BRANCH' pushed"
+echo "   • Tag '$VERSION_TAG' created and pushed"
 echo ""
 echo "📦 Users can now install with:"
 echo "   cargo generate --git $(git config --get remote.origin.url) --branch $VERSION_BRANCH --name myapp"
@@ -230,4 +315,4 @@ echo ""
 echo "📌 Next steps:"
 echo "   1. Create GitHub release from tag '$VERSION_TAG'"
 echo "   2. Test the template installation"
-echo "   3. Update README if needed"
+echo "   3. Consider merging back to main if needed"
