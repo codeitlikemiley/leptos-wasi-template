@@ -2,19 +2,17 @@
 set -euo pipefail
 
 # -----------------------------
-# Helper Functions
+# RELEASE SCRIPT FOR CARGO-GENERATE TEMPLATES
+# Branches: 0.1.3 (no v prefix) - for cargo generate
+# Tags: v0.1.3 (with v prefix) - for GitHub releases
 # -----------------------------
+
 confirm() {
   read -r -p "$1 (y/N): " response
   case "$response" in
     [yY][eE][sS]|[yY]) true ;;
     *) false ;;
   esac
-}
-
-normalize_branch_name() {
-  local branch="$1"
-  echo "$branch" | sed 's#^refs/heads/##'
 }
 
 # -----------------------------
@@ -27,7 +25,8 @@ if [ $# -ne 1 ]; then
 fi
 
 VERSION="$1"
-TAG="v$VERSION"
+VERSION_BRANCH="$VERSION"      # Branch name: 0.1.3
+VERSION_TAG="v$VERSION"        # Tag name: v0.1.3
 
 # Validate version format
 if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -36,127 +35,79 @@ if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   exit 1
 fi
 
-# -----------------------------
-# Check for naming conflicts
-# -----------------------------
-echo "🔍 Checking for branch/tag conflicts..."
-
-# Check if there's a branch with the same name as our tag
-if git show-ref --verify --quiet "refs/heads/$TAG"; then
-  echo "⚠️  WARNING: You have a branch named '$TAG' which conflicts with the tag name!"
-  echo "   This will cause ambiguity issues."
-  
-  if confirm "Delete the branch '$TAG' to avoid conflicts?"; then
-    # Check if it's the current branch
-    CURRENT_BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo "")
-    if [ "$CURRENT_BRANCH" = "$TAG" ]; then
-      echo "📌 Switching to main/master first..."
-      git checkout main 2>/dev/null || git checkout master 2>/dev/null || {
-        echo "❌ Cannot switch away from $TAG branch. Please manually switch branches first."
-        exit 1
-      }
-    fi
-    
-    # Delete local branch
-    echo "🗑 Deleting local branch: $TAG"
-    git branch -D "$TAG"
-    
-    # Delete remote branch if exists
-    if git ls-remote --heads origin | grep -q "refs/heads/$TAG"; then
-      echo "🗑 Deleting remote branch: $TAG"
-      git push origin --delete "refs/heads/$TAG"
-    fi
-  else
-    echo "❌ Cannot proceed with conflicting branch name. Please rename or delete the branch '$TAG'"
-    exit 1
-  fi
-fi
+echo "🎯 Release Plan:"
+echo "   Version: $VERSION"
+echo "   Branch:  $VERSION_BRANCH (for cargo generate)"
+echo "   Tag:     $VERSION_TAG (for GitHub releases)"
+echo ""
 
 # -----------------------------
-# Detect current branch
+# Get current branch
 # -----------------------------
-RAW_BRANCH=$(git symbolic-ref HEAD 2>/dev/null || echo "")
-if [ -z "$RAW_BRANCH" ]; then
-  echo "❌ Not on any branch (detached HEAD state)."
+CURRENT_BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo "")
+
+if [ -z "$CURRENT_BRANCH" ]; then
+  echo "❌ Not on any branch (detached HEAD)"
   exit 1
 fi
 
-CURRENT_BRANCH=$(normalize_branch_name "$RAW_BRANCH")
-
-# -----------------------------
-# Determine release strategy
-# -----------------------------
-echo "⚡ Preparing release: $TAG"
 echo "📍 Current branch: $CURRENT_BRANCH"
 
-# Option 1: Release from main/master branch (recommended)
-if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
-  echo "✅ Releasing from $CURRENT_BRANCH branch"
-  RELEASE_BRANCH="$CURRENT_BRANCH"
-  
-# Option 2: Already on a release branch
-elif [[ "$CURRENT_BRANCH" =~ ^release/.+ ]]; then
-  echo "✅ Already on release branch: $CURRENT_BRANCH"
-  RELEASE_BRANCH="$CURRENT_BRANCH"
-  
-# Option 3: Create a new release branch
-else
-  RELEASE_BRANCH="release/$VERSION"
-  echo "⚠️  Not on main/master or release branch."
-  
-  if confirm "Create new release branch '$RELEASE_BRANCH' from current branch?"; then
-    # Check if release branch already exists
-    if git show-ref --verify --quiet "refs/heads/$RELEASE_BRANCH"; then
-      echo "⚠️  Branch '$RELEASE_BRANCH' already exists locally."
-      if confirm "Switch to existing branch?"; then
-        git checkout "$RELEASE_BRANCH"
-      else
-        echo "❌ Release aborted."
-        exit 1
-      fi
-    else
-      echo "🌿 Creating new release branch: $RELEASE_BRANCH"
-      git checkout -b "$RELEASE_BRANCH"
-    fi
-  elif confirm "Continue release from current branch '$CURRENT_BRANCH'?"; then
-    RELEASE_BRANCH="$CURRENT_BRANCH"
-  else
-    echo "❌ Release aborted."
-    exit 1
-  fi
-fi
-
 # -----------------------------
-# Fetch latest remote changes
+# Fetch latest changes
 # -----------------------------
-echo "📥 Fetching latest changes from origin..."
+echo "📥 Fetching latest changes..."
 git fetch origin --tags --prune
 
 # -----------------------------
-# Sync with remote if branch exists
+# Handle the version branch
 # -----------------------------
-REMOTE_BRANCH="origin/$RELEASE_BRANCH"
-
-if git show-ref --verify --quiet "refs/remotes/$REMOTE_BRANCH"; then
-  echo "📦 Syncing with $REMOTE_BRANCH..."
+if [ "$CURRENT_BRANCH" = "$VERSION_BRANCH" ]; then
+  echo "✅ Already on version branch '$VERSION_BRANCH'"
   
-  # Check if we're behind
-  LOCAL_COMMIT=$(git rev-parse HEAD)
-  REMOTE_COMMIT=$(git rev-parse "$REMOTE_BRANCH")
+  # Sync with remote if it exists
+  if git show-ref --verify --quiet "refs/remotes/origin/$VERSION_BRANCH"; then
+    echo "📦 Pulling latest changes from origin/$VERSION_BRANCH..."
+    git pull origin "$VERSION_BRANCH"
+  fi
   
-  if [ "$LOCAL_COMMIT" != "$REMOTE_COMMIT" ]; then
-    echo "⚠️  Local and remote branches have diverged."
-    if confirm "Pull and merge remote changes?"; then
-      git pull origin "$RELEASE_BRANCH" --rebase=false -X ours || {
-        echo "❌ Merge failed, please resolve conflicts manually."
-        exit 1
-      }
+elif git show-ref --verify --quiet "refs/heads/$VERSION_BRANCH"; then
+  echo "ℹ️  Version branch '$VERSION_BRANCH' exists locally"
+  if confirm "Switch to existing branch '$VERSION_BRANCH'?"; then
+    git checkout "$VERSION_BRANCH"
+    
+    # Sync with remote if it exists
+    if git show-ref --verify --quiet "refs/remotes/origin/$VERSION_BRANCH"; then
+      echo "📦 Pulling latest changes from origin/$VERSION_BRANCH..."
+      git pull origin "$VERSION_BRANCH"
     fi
   else
-    echo "✅ Already in sync with remote."
+    echo "❌ Release aborted"
+    exit 1
   fi
+  
 else
-  echo "ℹ️  Remote branch $REMOTE_BRANCH does not exist yet."
+  # Create new version branch
+  echo "🌿 Version branch '$VERSION_BRANCH' doesn't exist"
+  
+  # Determine base branch
+  if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
+    BASE_BRANCH="$CURRENT_BRANCH"
+  else
+    echo "⚠️  You're not on main/master branch"
+    if confirm "Create version branch from current branch '$CURRENT_BRANCH'?"; then
+      BASE_BRANCH="$CURRENT_BRANCH"
+    elif confirm "Switch to main branch first?"; then
+      git checkout main 2>/dev/null || git checkout master
+      BASE_BRANCH=$(git symbolic-ref --short HEAD)
+    else
+      echo "❌ Release aborted"
+      exit 1
+    fi
+  fi
+  
+  echo "🌿 Creating version branch '$VERSION_BRANCH' from '$BASE_BRANCH'..."
+  git checkout -b "$VERSION_BRANCH"
 fi
 
 # -----------------------------
@@ -166,79 +117,117 @@ if [ ! -f VERSION ]; then
   echo "0.0.0" > VERSION
 fi
 
-PREV_VERSION=$(cat VERSION || echo "none")
+PREV_VERSION=$(cat VERSION || echo "0.0.0")
 
 if [ "$PREV_VERSION" != "$VERSION" ]; then
-  echo "📝 Updating VERSION file: $PREV_VERSION → $VERSION"
+  echo "📝 Updating VERSION: $PREV_VERSION → $VERSION"
   echo "$VERSION" > VERSION
   git add VERSION
-  git commit -m "chore(release): bump version to $VERSION" || echo "ℹ️ No changes to commit."
-else
-  echo "ℹ️ VERSION already at $VERSION"
 fi
 
 # -----------------------------
-# Handle existing tags safely
+# Update cargo-generate.toml
 # -----------------------------
-# Check and delete local tag if exists
-if git rev-parse "$TAG" >/dev/null 2>&1; then
-  echo "🗑 Deleting existing local tag: $TAG"
-  git tag -d "$TAG" || true  # Don't fail if tag doesn't exist
-else
-  echo "ℹ️ No existing local tag: $TAG"
+if [ -f "cargo-generate.toml" ]; then
+  echo "📝 Updating cargo-generate.toml to use branch '$VERSION_BRANCH'"
+  
+  # Create temp file with updated content
+  cat > cargo-generate.toml.tmp << EOF
+[template]
+cargo_generate_version = ">=0.15.0"
+branch = "$VERSION_BRANCH"
+exclude = [
+    "public/**/*.ico",
+]
+
+[placeholders.description]
+prompt = "Enter a short description for your project"
+default = "A Leptos application running as a WASI Component"
+
+[placeholders.port]
+prompt = "Which port should the server run on?"
+default = "8080"
+regex = "^[0-9]{4,5}$"
+
+[placeholders.component_outdir]
+prompt = "Where to output your WASI component"
+default = "target/server"
+
+[copy]
+"public/**/*.ico" = "public/"
+EOF
+  
+  mv cargo-generate.toml.tmp cargo-generate.toml
+  git add cargo-generate.toml
 fi
 
-# Check and delete remote tag if exists
-if git ls-remote --tags origin | grep -q "refs/tags/$TAG"; then
-  echo "⚠️  Remote tag '$TAG' already exists."
-  if confirm "Delete existing remote tag?"; then
-    echo "🗑 Deleting remote tag: $TAG"
-    # Use explicit refs/tags/ to avoid ambiguity
-    git push origin ":refs/tags/$TAG" || true
+# -----------------------------
+# Commit changes if any
+# -----------------------------
+if ! git diff --cached --quiet; then
+  echo "💾 Committing version changes..."
+  git commit -m "chore(release): prepare version $VERSION"
+else
+  echo "ℹ️  No changes to commit"
+fi
+
+# -----------------------------
+# Push the version branch
+# -----------------------------
+echo "⬆️  Pushing branch '$VERSION_BRANCH'..."
+if git show-ref --verify --quiet "refs/remotes/origin/$VERSION_BRANCH"; then
+  git push origin "$VERSION_BRANCH"
+else
+  git push --set-upstream origin "$VERSION_BRANCH"
+fi
+
+# -----------------------------
+# Handle the tag
+# -----------------------------
+# Delete existing local tag if present
+if git rev-parse "$VERSION_TAG" >/dev/null 2>&1; then
+  echo "🗑  Deleting existing local tag: $VERSION_TAG"
+  git tag -d "$VERSION_TAG"
+fi
+
+# Check for existing remote tag
+if git ls-remote --tags origin | grep -q "refs/tags/$VERSION_TAG"; then
+  echo "⚠️  Remote tag '$VERSION_TAG' already exists"
+  if confirm "Delete and recreate remote tag?"; then
+    echo "🗑  Deleting remote tag: $VERSION_TAG"
+    git push origin ":refs/tags/$VERSION_TAG"
   else
-    echo "❌ Cannot create tag that already exists remotely."
+    echo "❌ Cannot proceed with existing tag"
     exit 1
   fi
-else
-  echo "ℹ️ No existing remote tag: $TAG"
 fi
 
-# -----------------------------
 # Create new tag
-# -----------------------------
-echo "✨ Creating new tag: $TAG"
-git tag -a "$TAG" -m "Release $VERSION"
+echo "✨ Creating tag: $VERSION_TAG"
+git tag -a "$VERSION_TAG" -m "Release $VERSION
+
+Template installation:
+- Via branch: cargo generate --git $(git config --get remote.origin.url) --branch $VERSION_BRANCH
+- Via tag: cargo generate --git $(git config --get remote.origin.url) --tag $VERSION_TAG"
+
+# Push tag
+echo "⬆️  Pushing tag '$VERSION_TAG'..."
+git push origin "$VERSION_TAG"
 
 # -----------------------------
-# Final confirmation and push
+# Success!
 # -----------------------------
 echo ""
-echo "📋 Release Summary:"
-echo "   Branch: $RELEASE_BRANCH"
-echo "   Tag: $TAG"
-echo "   Version: $VERSION"
+echo "✅ Release $VERSION completed successfully!"
 echo ""
-
-if confirm "🚀 Push branch and tag to origin?"; then
-  # Push branch first
-  echo "⬆️ Pushing branch '$RELEASE_BRANCH'..."
-  git push origin "$RELEASE_BRANCH" || {
-    echo "⚠️  Branch push failed, trying with --set-upstream..."
-    git push --set-upstream origin "$RELEASE_BRANCH"
-  }
-  
-  # Then push tag explicitly with refs/tags/ to avoid ambiguity
-  echo "⬆️ Pushing tag '$TAG'..."
-  git push origin "refs/tags/$TAG:refs/tags/$TAG"
-  
-  echo ""
-  echo "✅ Release $TAG completed successfully!"
-  echo ""
-  echo "📌 Next steps:"
-  echo "   1. Create a GitHub release from tag '$TAG'"
-  echo "   2. If using a release branch, create a PR to merge back to main"
-  echo "   3. Delete the release branch after merging (if applicable)"
-else
-  echo "❌ Push aborted. Tag created locally but not pushed."
-  echo "   To push later: git push origin $RELEASE_BRANCH && git push origin refs/tags/$TAG"
-fi
+echo "📋 Summary:"
+echo "   • Branch '$VERSION_BRANCH' created and pushed (for cargo-generate)"
+echo "   • Tag '$VERSION_TAG' created and pushed (for GitHub releases)"
+echo ""
+echo "📦 Users can now install with:"
+echo "   cargo generate --git $(git config --get remote.origin.url) --branch $VERSION_BRANCH --name myapp"
+echo ""
+echo "📌 Next steps:"
+echo "   1. Create GitHub release from tag '$VERSION_TAG'"
+echo "   2. Test the template installation"
+echo "   3. Update README if needed"
