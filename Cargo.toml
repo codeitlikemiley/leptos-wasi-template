@@ -1,0 +1,72 @@
+[package]
+name = "{{crate_name}}"
+version = "0.1.0"
+edition = "2024"
+authors = ["{{authors}}"]
+description = "{{description}}"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+bytes = "1.10.1"
+cfg-if = "1"
+console_error_panic_hook = "0.1"
+futures = "0.3.30"
+hydration_context = { version = "0.3.0" }
+leptos = { version = "0.7.8"  }
+leptos_meta = { version = "0.7.8" }
+leptos_router = { version = "0.7.8" }
+leptos_wasi = { version = "0.1.3", optional = true }
+wasi = { version = "=0.13.1", optional = true }
+wasm-bindgen = { version = "0.2.103", optional = true }
+
+[features]
+# This is your client-side feature.
+hydrate = [
+  "leptos/hydrate",
+  "dep:wasm-bindgen",
+]
+
+# This is your server-side feature.
+ssr = [
+  "leptos/ssr",
+  "leptos_meta/ssr",
+  "leptos_router/ssr",
+  "dep:leptos_wasi",
+  "dep:wasi",
+]
+
+# Defines a size-optimized profile for the WASM bundle in release mode.
+[profile.wasm-release]
+inherits = "release"
+opt-level = 'z'
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[package.metadata.leptos]
+tailwind-input-file = "input.css"
+assets-dir = "public"
+
+# == Hydrate (client)
+lib-profile-release = "wasm-release"
+lib-features = ["hydrate"]
+
+# ==== Rebuild the std crates using the optimized profile.
+lib-cargo-args = [
+    # "-Zbuild-std=std,panic_abort,core,alloc",
+    # "-Zbuild-std-features=panic_immediate_abort",
+]
+
+# == SSR
+bin-profile-release = "wasm-release"
+bin-target-triple = "wasm32-wasip2"
+bin-features = ["ssr"]
+bin-target-dir = "{{component_outdir}}"
+
+# ==== Rebuild the std crates using the optimized profile.
+bin-cargo-args = [
+    # "-Zbuild-std=std,panic_abort,core,alloc",
+    # "-Zbuild-std-features=panic_immediate_abort,wasi_ext",
+]

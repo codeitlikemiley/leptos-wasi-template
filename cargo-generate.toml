@@ -1,0 +1,22 @@
+[template]
+cargo_generate_version = ">=0.15.0"
+branch = "v0.1.3"
+exclude = [
+    "public/**/*.ico",
+]
+
+[placeholders.description]
+prompt = "Enter a short description for your project"
+default = "A Leptos application running as a WASI Component"
+
+[placeholders.port]
+prompt = "Which port should the server run on?"
+default = "8080"
+regex = "^[0-9]{4,5}$"
+
+[placeholders.component_outdir]
+prompt = "Where to output your WASI component"
+default = "target/server"
+
+[copy]
+"public/**/*.ico" = "public/"
