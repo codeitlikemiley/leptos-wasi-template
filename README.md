@@ -8,7 +8,7 @@
 A production-ready [cargo-generate](https://cargo-generate.github.io/cargo-generate/) template for creating full-stack Rust web applications using [Leptos](https://leptos.dev/) framework with WebAssembly System Interface (WASI) Components. This template provides a complete, working setup for server-side rendered (SSR) Rust web applications with client-side hydration, ready for deployment on any WASI-compatible runtime.
 
 > **Note:**  
-> The default branch/tag (`v0.1.3`) is pinned to match a specific `leptos_wasi` version.  
+> The default branch/tag (`0.1.3`) is pinned to match a specific `leptos_wasi` version.  
 > Using `main` or newer tags may introduce breaking changes unless you explicitly opt into them.
 
 ---
@@ -30,7 +30,7 @@ cargo generate --git https://github.com/codeitlikemiley/leptos-wasi-template --n
 Generate from a specific version:
 
 ```bash
-cargo generate --git https://github.com/codeitlikemiley/leptos-wasi-template --branch v0.1.4 --name my-app
+cargo generate --git https://github.com/codeitlikemiley/leptos-wasi-template --branch 0.1.3 --name my-app
 ```
 
 Generate from the development branch:
