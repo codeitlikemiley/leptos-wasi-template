@@ -24,19 +24,13 @@ cargo install cargo-generate
 Generate a new project using the stable release:
 
 ```bash
-cargo generate --git https://github.com/codeitlikemiley/leptos-wasi-template --name counter
+cargo generate --git https://github.com/codeitlikemiley/leptos-wasi-template --name counter -s
 ```
 
 Generate from a specific version:
 
 ```bash
 cargo generate --git https://github.com/codeitlikemiley/leptos-wasi-template --branch 0.1.3 --name counter -s
-```
-
-Generate from the development branch:
-
-```bash
-cargo generate --git https://github.com/codeitlikemiley/leptos-wasi-template --branch main --name my-app
 ```
 
 ---
